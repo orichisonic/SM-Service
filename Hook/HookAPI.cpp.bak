@@ -1,0 +1,1053 @@
+// ------------------------------------- //
+// 您如果要使用本文件，请不要删除本说明  //
+// ------------------------------------- //
+//             HOOKAPI v1.4              //
+//   Copyright 2002 编程沙龙 Paladin     //
+//       www.ProgramSalon.com            //
+// ------------------------------------- //
+// 
+//  HookAPI.cpp
+//  通过取得函数地址，并在函数代码前插入call myfunc来实现调用myfunc的程序
+//  Last Modified: 2002.05.07, by Paladin
+//
+
+#include <windows.h>
+#include <time.h>
+#include <stdio.h>
+#include "HookApi.h"
+#include <ras.h>
+
+#define MsgBox(msg) MessageBox(NULL, msg, "http://www.programsalon.com - HookAPI", MB_OK)
+
+#pragma check_stack(off)
+
+#ifdef WIN95
+
+#pragma comment(linker, "/section:.data,RWS /section:.idata,RWS /section:.bss,RWS")
+#pragma comment(linker, "/base:0xBFF70000")
+
+#include "Ring0.h"
+
+#endif
+
+char g_szDllPath[128];
+
+void APIHandler();
+int WINAPI RestoreAPICodes(char *my_api_name);
+int WINAPI ChangeAPICodes(char *my_api_name);
+
+PSTR TrimString(PSTR pszStr);
+char *regdll ="advapi32.dll";
+char *regfuncs[] ={
+	"RegOpenKeyExA",
+	"RegCloseKey",
+	"RegCreateKeyExA",
+	"RegSetValueExA",
+	"RegQueryValueExA",
+	" not crypt?"
+};
+
+#define MAX_DEMO_USED_COUNT		5
+static int g_demo_used_count =0;
+
+bool RemoveProtection(PVOID pvAddress, tagAPIInfo *pAPIInfo);
+
+#ifdef WIN95
+void WriteLog(char *fmt,...)
+{
+	va_list args;
+	char modname[200];
+
+	char temp[5000];
+	HANDLE hFile;
+
+	GetModuleFileName(NULL, modname, sizeof(modname));
+
+	if((hFile =CreateFile("c:\\hookapi.log", GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)) <0)
+	{
+		return;
+	}
+	
+	_llseek((HFILE)hFile, 0, SEEK_END);
+
+	wsprintf(temp, "mydll.dll:%s:", modname);
+	DWORD dw;
+	WriteFile(hFile, temp, strlen(temp), &dw, NULL);
+	
+	va_start(args,fmt);
+	vsprintf(temp, fmt, args);
+	va_end(args);
+
+	WriteFile(hFile, temp, strlen(temp), &dw, NULL);
+
+	wsprintf(temp, "\n");
+	WriteFile(hFile, temp, strlen(temp), &dw, NULL);
+
+	_lclose((HFILE)hFile);
+}
+#else
+void WriteLog(char *fmt,...)
+{
+	FILE *fp;
+	va_list args;
+	char modname[128];
+
+	if((fp =fopen("c:\\hookapi.log", "a")) !=NULL)
+	{		
+		va_start(args,fmt);
+
+		GetModuleFileName(NULL, modname, sizeof(modname));
+		fprintf(fp, "\n%s:\n", modname);
+		vfprintf(fp, fmt, args);
+		fprintf(fp, "\n");
+		fclose(fp);
+		
+		va_end(args);
+	}
+}
+
+void WriteLog2(char *msg)
+{
+	FILE *fp;
+	char modname[128];
+
+	if((fp =fopen("c:\\hookapi.log", "a")) !=NULL)
+	{		
+		GetModuleFileName(NULL, modname, sizeof(modname));
+		fprintf(fp, "\n%s:\n%s\n", modname, msg);
+		fclose(fp);
+	}
+}
+#endif
+
+char * GetErrString(char *str, DWORD errcode)
+{
+	LPVOID lpbuf;
+
+	if(FormatMessage( 
+		FORMAT_MESSAGE_ALLOCATE_BUFFER |
+		FORMAT_MESSAGE_FROM_SYSTEM | 
+		FORMAT_MESSAGE_IGNORE_INSERTS,
+		NULL,
+		errcode,
+		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		(LPTSTR) &lpbuf,
+		0,
+		NULL
+	))
+	{
+		lstrcpy(str, (char *)lpbuf);
+		LocalFree(lpbuf);
+	}
+
+	return str;
+}
+
+// NT下的APIInfo是包含在一个队列中的，而95则是在一个数组中
+tagAPIInfo *Head = NULL;
+tagAPIInfo *Tail = NULL;
+
+#ifdef WIN95
+
+DWORD dwItemIndex = 0;
+tagAPIInfo APIInfoArray[MAX_API];
+
+#endif
+
+tagAPIInfo *AddItem()
+{
+	tagAPIInfo *Item;
+
+	#ifdef WIN95
+
+	if (dwItemIndex == MAX_API)
+		return NULL;
+
+	Item = &APIInfoArray[dwItemIndex];
+	dwItemIndex++;
+
+	#endif
+
+	#ifdef WINNT
+
+	Item = new tagAPIInfo;
+
+	#endif
+	
+	memset(Item, 0, sizeof(tagAPIInfo));
+
+	if (Head == NULL)
+	{
+		Head = Item;
+		Tail = Item;
+	}
+	else
+	{
+		Tail->Next = Item;
+		Tail = Tail->Next;
+	}
+
+	Tail->Next = NULL;
+	
+	return Item;
+}
+
+#ifdef WINNT
+
+void RemoveItem(tagAPIInfo *Item)
+{
+	tagAPIInfo *CurrentItem = Head;
+
+	if (Head == NULL) return;
+
+	if (Item == Head)
+	{
+		if (Head == Tail) Tail = NULL;
+		Head = Head->Next;
+		delete Item;
+		return;
+	}
+
+	while (CurrentItem->Next != Item)
+		CurrentItem = CurrentItem->Next;
+	
+	CurrentItem->Next = Item->Next;
+
+	if (Item == Tail) Tail = CurrentItem;
+
+	delete Item;
+}
+
+#endif
+
+#ifdef WIN95
+//DWORD g_result =0, g_eax =0;
+// 修改地址属性
+__declspec(naked) void Ring0ModifyPageProtection()
+{
+	_asm
+	{
+	//Mov [g_result], 1 
+		Mov EAX, ECX
+		Shr EAX, 22
+		Test DWORD PTR [0FFBFE000h + EAX * 4], 1
+		Jz Fail
+
+ 	//Mov [g_result], 2 
+		Mov EAX, ECX
+		Shr EAX, 12
+		Mov EBX, EAX
+		Mov EAX, DWORD PTR [0FF800000h + EAX * 4]
+		Test EAX, 1
+		//Jz Fail	// changed by Paladin 2003.01.23
+
+	//Mov [g_result], 3 //
+
+		Mov EAX, 1
+		Cmp EDX, PAGE_READWRITE
+		Je PageReadWrite
+
+		And DWORD PTR [0FF800000h + EBX * 4], 0xFFFFFFFD
+		Jmp Done
+
+PageReadWrite:
+
+		Or DWORD PTR [0FF800000h + EBX * 4], 2
+		Jmp Done
+
+Fail:
+
+		Xor EAX, EAX
+
+Done:
+
+		Retf
+	}
+}
+
+// 使系统进入Ring0模式下
+GDTR gdtr;
+GDT_DESCRIPTOR *pGDTDescriptor;
+bool CallRing0(PVOID pvRing0FuncAddr, PVOID pvAddr, DWORD dwPageProtection)
+{
+
+	bool Result;
+
+	if(pvAddr ==NULL) return false;
+
+	_asm Sgdt [gdtr]
+
+	// Skip the null descriptor
+
+	pGDTDescriptor = (GDT_DESCRIPTOR *)(gdtr.dwGDTBase + 8);
+
+	// Search for a free GDT descriptor
+
+	for (WORD wGDTIndex = 1; wGDTIndex < (gdtr.wGDTLimit / 8); wGDTIndex++)
+	{
+		if (pGDTDescriptor->Type == 0   &&
+			pGDTDescriptor->System == 0 &&
+			pGDTDescriptor->DPL == 0    &&
+			pGDTDescriptor->Present == 0)
+		{
+		// Found one !
+		// Now we need to transform this descriptor into a callgate.
+		// Note that we're using selector 0x28 since it corresponds
+		// to a ring 0 segment which spans the entire linear address
+		// space of the processor (0-4GB).
+
+		CALLGATE_DESCRIPTOR *pCallgate;
+
+		pCallgate =	(CALLGATE_DESCRIPTOR *) pGDTDescriptor;
+		pCallgate->Offset_0_15 = LOWORD(pvRing0FuncAddr);
+		pCallgate->Selector = 0x28;
+		pCallgate->ParamCount =	0;
+		pCallgate->Unused = 0;
+		pCallgate->Type = 0xc;  // 386 call gate
+		pCallgate->System = 0;  // a system descriptor
+		pCallgate->DPL = 3;     // ring 3 code can call
+		pCallgate->Present = 1;
+		pCallgate->Offset_16_31 = HIWORD(pvRing0FuncAddr);
+
+		// Prepare the far call parameters
+
+		WORD CallgateAddr[3];
+
+		CallgateAddr[0] = 0x0;
+		CallgateAddr[1] = 0x0;
+		CallgateAddr[2] = (wGDTIndex << 3) | 3;
+
+		// call Ring0ModifyPageProtection
+
+		_asm
+		{
+			Mov ECX, [pvAddr]
+			Mov EDX, [dwPageProtection]
+			Cli
+			Call FWORD PTR [CallgateAddr]
+			Sti
+			Mov DWORD PTR [Result], EAX
+		}
+
+		// Now free the GDT descriptor
+
+		memset(pGDTDescriptor, 0, 8);
+
+		return Result;
+	}
+
+	// Advance to the next GDT descriptor
+	pGDTDescriptor++;
+	}
+
+	// Whoops, the GDT is full
+
+	return false;
+}
+
+// 改变内存状态为可读写
+bool RemovePageProtection(PVOID pvAddr)
+{
+	return CallRing0((PVOID)Ring0ModifyPageProtection, pvAddr, PAGE_READWRITE);
+}
+
+
+bool SetPageProtection(PVOID pvAddr)
+{
+	return CallRing0((PVOID)Ring0ModifyPageProtection, pvAddr, PAGE_READONLY);
+}
+
+#endif
+
+typedef LONG (WINAPI *REGOPENKEYEXA)(HKEY, LPCSTR, DWORD, REGSAM, PHKEY);
+typedef LONG (WINAPI *REGCLOSEKEY)(HKEY);
+typedef LONG (WINAPI *REGCREATEKEYEXA)(HKEY, LPCSTR, DWORD, LPSTR, DWORD, REGSAM, LPSECURITY_ATTRIBUTES, PHKEY, LPDWORD);
+typedef LONG (WINAPI *REGSETVALUEEXA)(HKEY, LPCSTR, DWORD, DWORD, CONST BYTE *, DWORD);
+typedef LONG (WINAPI *REGQUERYVALUEEXA)(HKEY, LPSTR, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
+
+
+char *reg_v1_c()
+{
+	static char reg_v1[100] ="TOEUW@SE[Qrnhr`nS`mom";
+	static char reg_v2[100];
+	for(int i =0; i<(int)strlen(reg_v1); i++)
+		reg_v2[i] =reg_v1[i]+i%3-1;
+	reg_v2[i] =0;
+	//WriteLog("reg_v1:%s", reg_v1);
+	return reg_v2;
+}
+
+
+#ifdef WINNT
+// 为了截获新建立的进程而截获CreateProcessW
+DWORD WINAPI myCreateProcessW(
+	LPCWSTR lpApplicationName,
+	LPWSTR lpCommandLine, 
+	LPSECURITY_ATTRIBUTES lpProcessAttributes,
+	LPSECURITY_ATTRIBUTES lpThreadAttributes,
+	BOOL bInheritHandles,
+	DWORD dwCreationFlags,
+	LPVOID lpEnvironment,
+	LPCWSTR lpCurrentDirectory,
+	LPSTARTUPINFOW lpStartupInfo,
+	LPPROCESS_INFORMATION lpProcessInformation
+)
+{
+	//WriteLog("HookAPI:CreateProcessW");
+	return CreateProcessW(lpApplicationName,
+		lpCommandLine, lpProcessAttributes,
+		lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment,
+		lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+}
+
+DWORD WINAPI myCreateProcessA(
+	LPCSTR lpApplicationName,
+	LPSTR lpCommandLine, 
+	LPSECURITY_ATTRIBUTES lpProcessAttributes,
+	LPSECURITY_ATTRIBUTES lpThreadAttributes,
+	BOOL bInheritHandles,
+	DWORD dwCreationFlags,
+	LPVOID lpEnvironment,
+	LPCSTR lpCurrentDirectory,
+	LPSTARTUPINFO lpStartupInfo,
+	LPPROCESS_INFORMATION lpProcessInformation
+)
+{
+	//WriteLog("HookAPI:CreateProcessA");
+	return CreateProcessA(lpApplicationName,
+		lpCommandLine, lpProcessAttributes,
+		lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment,
+		lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+}
+
+// 通知InstDLL安装钩子
+void SendNotifyMessage(DWORD process_id)
+{
+	HWND hWndNotify =FindWindow("HookAPINotify", NULL);
+	if(hWndNotify) PostMessage(hWndNotify, WM_APP+100, process_id, 0L);
+}
+#endif
+
+// DllMain函数调用的初始化函数
+bool ParseAPIInfo()
+{
+	char cur_mod[200];
+	PSTR pszParameterList;
+	PSTR pszParameter;
+	char pszMyFuncName[200];
+	char pszModuleName[200];
+	char pszAPIName[300];
+	char cParamIndex;
+	tagAPIInfo *pAPIInfo;
+	MYAPIINFO *pMyAPIInfo;
+	tagGetMyAPIInfo GetMyAPIInfo;
+	HINSTANCE hMyDLL =NULL;
+	tagMyFunc myFunc;
+	// 得到要截获的api信息
+#ifdef WIN95
+	if((hMyDLL =GetModuleHandle("mydll_9x.dll")) ==NULL)
+	{
+		WriteLog("ParseAPIInfo:GetModule mydll_9x.dll failed!");
+		return false;
+	}
+#else
+	if((hMyDLL =GetModuleHandle("mydll.dll")) ==NULL)
+	{
+		WriteLog("ParseAPIInfo:GetModule mydll.dll failed!");
+		return false;
+	}
+#endif
+
+	if((GetMyAPIInfo=(tagGetMyAPIInfo)GetProcAddress(hMyDLL, "GetMyAPIInfo")) ==NULL)
+	{
+		WriteLog("GetProcAddress GetMyAPIInfo of mydll.dll failed!");
+		return false;
+	}
+	pMyAPIInfo =GetMyAPIInfo();
+	if(pMyAPIInfo ==NULL)
+		return false;
+
+	int count =0;
+	int f_hook_process =false;
+
+	// 分析并保存函数和参数
+	GetModuleFileName(NULL, cur_mod, sizeof(cur_mod));
+	while (pMyAPIInfo[count].module_name !=NULL)
+	{
+		strcpy(pszModuleName, pMyAPIInfo[count].module_name);
+		strcpy(pszAPIName, pMyAPIInfo[count].function_name);
+		strcpy(pszMyFuncName, pMyAPIInfo[count].myfunc);
+		if (pszAPIName != NULL)
+		{
+			pszParameterList = strchr(pszAPIName, '(');
+
+			if (pszParameterList != NULL)
+			{
+				pszParameterList[0] = '\0';
+				pszParameterList++;
+				if((myFunc =(tagMyFunc)GetProcAddress(hMyDLL, pszMyFuncName)) ==NULL)
+				{
+					WriteLog("failed to GetrProcAddress:%s", pszMyFuncName);
+					return false;
+				}
+				//WriteLog("Hook %s %s", pszModuleName, pszAPIName);
+				pAPIInfo = HookAPIFunction(pszModuleName, pszAPIName, myFunc, pMyAPIInfo[count].start_pos);
+
+				if (pAPIInfo != NULL)
+				{
+#ifdef WINNT
+					if(!strcmp(pszAPIName, "CreateProcessW") || !strcmp(pszAPIName, "CreateProcessW"))
+						f_hook_process =true;
+
+					pAPIInfo->szAPIName = (PSTR)malloc(strlen(pszAPIName) + 1);
+#endif
+
+					if (pAPIInfo->szAPIName == NULL)
+						return false;
+
+					strcpy(pAPIInfo->szAPIName, pszAPIName);
+					strcpy(pAPIInfo->myFuncName, pszMyFuncName);
+					if(pMyAPIInfo[count].friend_myfunc_name)
+						strcpy(pAPIInfo->myFriendFuncName, pMyAPIInfo[count].friend_myfunc_name);
+
+#ifdef WIN95
+					pAPIInfo->hMutex = CreateMutex(NULL, FALSE, pszAPIName);
+#endif
+
+#ifdef WINNT
+					InitializeCriticalSection(&pAPIInfo->CriticalSection);
+#endif
+
+					cParamIndex = 0;
+
+					pszParameter = strtok(pszParameterList, ",;)");
+
+					while (pszParameter != NULL)
+					{
+						pszParameter = TrimString(pszParameter);
+						cParamIndex++;
+
+						if (cParamIndex == MAX_PARAM)
+							break;
+
+						pszParameter = strtok(NULL, ",;)");
+					}
+
+					if (cParamIndex == MAX_PARAM)
+						UnhookAPIFunction(pAPIInfo);
+					else
+						pAPIInfo->ParamCount = cParamIndex;
+				}
+				else
+				{
+					WriteLog("Error hook module:%s, function:%s", pszModuleName, pszAPIName);
+				}
+			}
+		}
+		count++;
+	}
+#ifdef WINNT
+	if(f_hook_process ==false)
+	{
+		//WriteLog("Hook myCreateProcessW", pszModuleName, pszAPIName);
+		strcpy(pszAPIName, "CreateProcessW");
+		pAPIInfo = HookAPIFunction("Kernel32", pszAPIName, (tagMyFunc)myCreateProcessW, 0);
+
+		if (pAPIInfo != NULL)
+		{
+			pAPIInfo->szAPIName = (PSTR)malloc(strlen(pszAPIName) + 1);
+			strcpy(pAPIInfo->szAPIName, pszAPIName);
+			strcpy(pAPIInfo->myFuncName, "myCreateProcessW");
+			InitializeCriticalSection(&pAPIInfo->CriticalSection);
+			pAPIInfo->ParamCount =10;
+			count++;
+			//WriteLog("hook CreatePrcoessW ok");
+		}
+
+		strcpy(pszAPIName, "CreateProcessA");
+		pAPIInfo = HookAPIFunction("Kernel32", pszAPIName, (tagMyFunc)myCreateProcessA, 0);
+
+		if (pAPIInfo != NULL)
+		{
+			pAPIInfo->szAPIName = (PSTR)malloc(strlen(pszAPIName) + 1);
+			strcpy(pAPIInfo->szAPIName, pszAPIName);
+			strcpy(pAPIInfo->myFuncName, "myCreateProcessA");
+			InitializeCriticalSection(&pAPIInfo->CriticalSection);
+			pAPIInfo->ParamCount =10;
+			count++;
+			//WriteLog("hook CreatePrcoessA ok");
+		}
+	}
+#endif
+
+	return true;
+}
+
+// 安装自己的api函数
+tagAPIInfo *HookAPIFunction(PSTR pszModuleName,  // 模块名称
+							PSTR pszAPIName,     // api函数名称
+							tagMyFunc MyFunc,    // 自己的函数地址
+							int start_pos
+							)
+{
+	HMODULE hModule;
+	tagAPIInfo *pAPIInfo;
+	tagAPIInfo *pTempAPIInfo;
+	PBYTE pbAPI;
+	PDWORD pdwAPI;
+	bool Result;
+
+	hModule = GetModuleHandle(pszModuleName);  // 得到模块句柄，取得的是在要Hook的执行文件中的模块句柄
+
+	if (hModule == NULL)
+	{
+		WriteLog("GetModule failed! %s", pszModuleName);
+		return NULL;
+	}
+	pbAPI = (PBYTE)GetProcAddress(hModule, pszAPIName);
+
+	if (pbAPI == NULL)
+	{
+		WriteLog("GetProcAddress failed! %s", pszAPIName);
+		return NULL;
+	}
+	// Is it already hooked ?
+
+	pTempAPIInfo = Head;
+	while (pTempAPIInfo != NULL)
+	{
+		if (pTempAPIInfo->APIAddress == (tagAPIAddr)pbAPI)
+		{
+			WriteLog("API already hooked! %s", pszAPIName);
+			return NULL;
+		}
+
+		pTempAPIInfo = pTempAPIInfo->Next;
+	}
+
+	// No, so add a new item
+
+	pAPIInfo = AddItem();
+	
+	if (pAPIInfo == NULL)
+	{
+		WriteLog("AddItem failed! %s", pszAPIName);
+		return NULL;
+	}
+
+	pAPIInfo->APIAddress = NULL;
+
+	//将函数所指内容改为可写
+	Result = RemoveProtection(pbAPI+start_pos, pAPIInfo);
+
+	if (Result == false)
+	{
+		#ifdef WINNT
+
+		RemoveItem(pAPIInfo);
+
+		#endif
+
+		WriteLog("RemoveProtection failed! %s", pszAPIName);
+		return NULL;
+	}
+	WriteLog("debug:HookFunction:%s, pbAPI:%x,start_pos:%d",pszAPIName, pbAPI, pAPIInfo->start_pos);
+
+	// 保存源函数前5个字节，因为后面将覆盖此处
+	memcpy(pAPIInfo->Opcodes, pbAPI+start_pos, 5);
+
+	pAPIInfo->APIAddress = (tagAPIAddr)pbAPI;
+	pAPIInfo->MyFunc = MyFunc;
+	pAPIInfo->start_pos =start_pos;
+	//在源函数前插入call APIHandler命令
+	pbAPI +=start_pos;// lgd 2003.03.01
+	pbAPI[0] = 0xE8;
+	pdwAPI = (DWORD *)&pbAPI[1];
+	pdwAPI[0] = (DWORD)APIHandler - (DWORD)pbAPI - 5;
+
+	return pAPIInfo;
+}
+
+void UnhookAPIFunction(tagAPIInfo *pAPIInfo)
+{
+	bool Result;
+
+	Result = RemoveProtection((PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos, pAPIInfo);
+	if (Result == true)  // 恢复原5个字节
+		memcpy((PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos, pAPIInfo->Opcodes, 5);
+	else WriteLog("UnhookAPIFunction %s RemoveProtection failed!", pAPIInfo->szAPIName);
+
+#ifdef WIN95
+	SetPageProtection((PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos);
+
+	if (pAPIInfo->hMutex)
+		CloseHandle(pAPIInfo->hMutex);
+#endif
+
+#ifdef WINNT
+	DWORD dwScratch;
+
+	DeleteCriticalSection(&pAPIInfo->CriticalSection);
+
+	VirtualProtect(pAPIInfo->APIAddress, 10, pAPIInfo->dwOldProtectionFlags, &dwScratch);
+	free(pAPIInfo->szAPIName);
+	RemoveItem(pAPIInfo);
+#endif
+
+}
+
+void UnhookAllAPIFunctions()
+{
+	tagAPIInfo *pAPIInfo;
+	tagAPIInfo *pTempAPIInfo;
+
+	pAPIInfo = Head;
+
+	while (pAPIInfo != NULL)
+	{
+		pTempAPIInfo = pAPIInfo->Next;
+
+		UnhookAPIFunction(pAPIInfo);
+
+		pAPIInfo = pTempAPIInfo;
+	}
+}
+
+// 主要函数APIHandler，所有api函数的替换函数
+void test()
+{
+	MsgBox("test");
+}
+
+typedef void (*FUNC_TEST)();
+
+void APIHandler()
+{
+	PBYTE pbAPI;
+	PDWORD pdwAPI;
+	tagAPIInfo *pAPIInfo;
+	PBYTE pbAfterCall;
+	PDWORD pdwParam;
+	PDWORD pdwESP;
+	DWORD dwParamSize;
+	void *pvReturnAddr;
+	DWORD dwReturnValue;
+
+	#ifdef WIN95
+
+	HANDLE hMutex;
+
+	#endif
+	_asm
+	{
+		Mov EAX, [EBP + 4] //前面是被替换的call xxxxxxxx命令
+		Mov [pbAfterCall], EAX
+
+		Mov EAX, [EBP + 8]
+		Mov [pvReturnAddr], EAX // 保存上次调用位置
+
+		Lea EAX, [EBP + 12]
+		Mov [pdwParam], EAX    //取参数
+	}
+//WriteLog("call func...");
+	pAPIInfo = Head;
+
+	while (pAPIInfo != NULL)
+	{
+		if ((pbAfterCall - 5) == (PBYTE)pAPIInfo->APIAddress)
+		{
+#ifdef WIN95
+
+			hMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, pAPIInfo->szAPIName);  // 共享加锁，防止函数多次同时调用下面的代码
+
+			if (hMutex)
+				WaitForSingleObject(hMutex, INFINITE);
+			else MsgBox("error Mutex");
+
+#endif
+
+#ifdef WINNT
+
+			EnterCriticalSection(&pAPIInfo->CriticalSection);// 共享加锁，防止函数多次同时调用下面的代码
+#endif
+
+//WriteLog("APIHandler %s ...",pAPIInfo->myFuncName);
+			memcpy((PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos, pAPIInfo->Opcodes, 5);   //还原原api函数前5字节(恢复api原函数调用)
+
+			break;
+		}
+
+		pAPIInfo = pAPIInfo->Next;
+	}
+//MsgBox(pAPIInfo->szAPIName);
+	if(pAPIInfo->myFriendFuncName[0])
+		RestoreAPICodes(pAPIInfo->myFriendFuncName);
+
+	dwParamSize = pAPIInfo->ParamCount * 4;  // 32位地址使用4个字节
+
+	pAPIInfo->ParamAddr =pdwParam;
+
+	DWORD errcode =0;
+
+	_asm
+	{
+		Sub ESP, [dwParamSize]
+		Mov [pdwESP], ESP
+	}
+
+	memcpy(pdwESP, pdwParam, dwParamSize);
+
+//MsgBox("APIHandler");
+	pAPIInfo->MyFunc();
+
+	_asm
+	{
+		Push EAX
+		Mov [dwReturnValue], EAX  //构造返回值
+	}
+
+	errcode =GetLastError();
+//#endif
+	//MsgBox(pAPIInfo->szAPIName);
+#ifdef WINNT
+	PROCESS_INFORMATION *pi =(PROCESS_INFORMATION *)pdwParam[9];
+	if(!strcmp(pAPIInfo->szAPIName, "CreateProcessW") || !strcmp(pAPIInfo->szAPIName, "CreateProcessA") )
+	{
+		if(dwReturnValue !=0)
+			SendNotifyMessage(pi->dwProcessId);
+	}
+#endif
+
+	if(pAPIInfo->myFriendFuncName[0])
+		RestoreAPICodes(pAPIInfo->myFriendFuncName);
+	
+	// 为Demo版本加的限制
+	//if(g_demo_used_count ++ <MAX_DEMO_USED_COUNT)
+	{
+		//再次在源函数前插入call命令，恢复myxxxx函数调用
+		pbAPI = (PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos;
+		pbAPI[0] = 0xE8;
+		pdwAPI = (DWORD *)&pbAPI[1];
+		pdwAPI[0] = (DWORD)APIHandler - (DWORD)pbAPI - 5;
+	}
+	//else
+	//{
+	//	char temp[256];
+	//	wsprintf(temp, "CmppAPI Demo版Hook次数%d已经超过限制,api:%s, errcode:%d", g_demo_used_count,pAPIInfo->szAPIName,  errcode);
+	//	MsgBox(temp);
+	//}
+
+#ifdef WIN95
+
+	if (hMutex)
+	{
+		ReleaseMutex(hMutex);
+		CloseHandle(hMutex);
+	}
+
+	#endif
+
+	#ifdef WINNT
+
+	LeaveCriticalSection(&pAPIInfo->CriticalSection);
+
+	#endif
+	// 恢复错误码
+	SetLastError(errcode);
+
+	// 构造虚函数返回
+
+	_asm
+	{
+		Pop EAX
+
+		Mov ECX, [dwParamSize]
+		Mov EDX, [pvReturnAddr]
+		Pop EDI
+		Pop ESI
+		Pop EBX
+		Mov ESP, EBP
+		Pop EBP
+		Add ESP, 8
+		Add ESP, ECX  //堆栈指针加参数大小，因为APIHandler没有参数，所以要如此
+		Push EDX
+		Ret
+	}
+}
+
+int WINAPI RestoreAPICodes(/*tagAPIAddr api, */char *my_api_name)
+{
+#ifdef WIN95
+	HANDLE hMutex;
+#endif
+	struct tagAPIInfo *pAPIInfo =Head;
+
+	while (pAPIInfo != NULL)
+	{
+		if (!strcmp(pAPIInfo->myFuncName, my_api_name))
+		{
+#ifdef WIN95
+
+			hMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, pAPIInfo->szAPIName);  // 共享加锁，防止函数多次同时调用下面的代码
+
+			if (hMutex)
+				WaitForSingleObject(hMutex, INFINITE);
+
+#endif
+			//int bytes =(PBYTE)api -(PBYTE)pAPIInfo->APIAddress;
+			memcpy((PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos, pAPIInfo->Opcodes, 5/*(5>bytes)?bytes:5*/);
+#ifdef WIN95
+
+	if (hMutex)
+	{
+		ReleaseMutex(hMutex);
+		CloseHandle(hMutex);
+	}
+#endif
+
+			break;
+		}
+
+		pAPIInfo = pAPIInfo->Next;
+	}
+
+	return 0;
+}
+
+int WINAPI ChangeAPICodes(char *my_api_name)
+{
+	PBYTE pbAPI;
+	PDWORD pdwAPI;
+	struct tagAPIInfo *pAPIInfo =Head;
+#ifdef WIN95
+	HANDLE hMutex;
+#endif
+
+	while (pAPIInfo != NULL)
+	{
+		if (!strcmp(pAPIInfo->myFuncName, my_api_name))
+		{
+#ifdef WIN95
+
+			hMutex = OpenMutex(MUTEX_ALL_ACCESS, FALSE, pAPIInfo->szAPIName);  // 共享加锁，防止函数多次同时调用下面的代码
+
+			if (hMutex)
+				WaitForSingleObject(hMutex, INFINITE);
+
+#endif
+			pbAPI = (PBYTE)pAPIInfo->APIAddress+pAPIInfo->start_pos;
+			pbAPI[0] = 0xE8;
+			pdwAPI = (DWORD *)&pbAPI[1];
+			pdwAPI[0] = (DWORD)APIHandler - (DWORD)pbAPI - 5;
+#ifdef WIN95
+
+	if (hMutex)
+	{
+		ReleaseMutex(hMutex);
+		CloseHandle(hMutex);
+	}
+#endif
+
+			break;
+		}
+
+		pAPIInfo = pAPIInfo->Next;
+	}
+
+	return 0;
+}
+
+// 使某块有写保护的内存地址（代码段内地址）为可写
+bool RemoveProtection(PVOID pvAddress, tagAPIInfo *pAPIInfo)
+{
+#ifdef WIN95
+
+	bool Result;
+
+	Result = RemovePageProtection(pvAddress);
+
+	if (Result == false)
+	{
+		return false;
+	}
+#endif
+
+#ifdef WINNT
+
+	MEMORY_BASIC_INFORMATION mbi;
+	DWORD dwProtectionFlags;
+	DWORD dwScratch;
+	BOOL Result;
+
+	// Get page protection of API
+
+	VirtualQuery(pvAddress, &mbi, sizeof(mbi));
+
+	dwProtectionFlags = mbi.Protect;
+	pAPIInfo->dwOldProtectionFlags = dwProtectionFlags;
+
+	// Remove page protection from API
+
+	//dwProtectionFlags &= ~PAGE_READONLY;
+	//dwProtectionFlags &= ~PAGE_EXECUTE_READ;
+	dwProtectionFlags = PAGE_READWRITE;
+
+	Result = VirtualProtect(pvAddress, 10, dwProtectionFlags, &dwScratch);
+
+	if (Result == FALSE)
+	{
+		char err[256];
+		GetErrString(err, GetLastError());
+		WriteLog("Error VirtualProtect:%s", err);
+		//WriteLog("VirtualProtect:%x,%x,%x", pvAddress, dwProtectionFlags, dwScratch);
+		return false;
+	}
+
+	//WriteLog("VirtualProtect:%x,%x,%x", pvAddress, dwProtectionFlags, dwScratch);
+
+#endif
+
+	return true;
+}
+
+// 截掉所有空格
+PSTR TrimString(PSTR pszStr)
+{
+	PCHAR pcBlankChar;
+
+	pcBlankChar = pszStr + strlen(pszStr) - 1;
+
+	while (*pcBlankChar == ' ') 
+	{
+		pcBlankChar[0] = '\0';
+		pcBlankChar--;
+	}
+
+	while (*pszStr == ' ') pszStr++;
+
+	return pszStr;
+}
+
+BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD dwReason, PVOID pvReserved)
+{
+	switch (dwReason)
+	{
+	case DLL_PROCESS_ATTACH:
+		//WriteLog("HookAPI.dll...DllMain");
+		DisableThreadLibraryCalls(hInstDLL);
+		GetProfileString("HookAPI", "dll_path", "", g_szDllPath, sizeof(g_szDllPath));
+		char mod_name[256];
+		GetModuleFileName(NULL, mod_name, sizeof(mod_name));
+		if(!strstr(mod_name, "HookAPI.exe"))
+			ParseAPIInfo();
+		//WriteLog("HookAPI.dll...ParseAPIInfo ok");
+
+		break;
+
+	case DLL_PROCESS_DETACH:
+		UnhookAllAPIFunctions();
+	break;
+	}
+
+	return TRUE;
+}

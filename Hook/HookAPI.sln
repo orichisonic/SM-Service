@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 7.00
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "HookAPI", "HookAPI.vcproj", "{98BA2BAC-806A-430F-9B5E-6E4DD847A512}"
+EndProject
+Global
+	GlobalSection(SolutionConfiguration) = preSolution
+		ConfigName.0 = Windows 9x Release
+		ConfigName.1 = Windows NT Debug
+		ConfigName.2 = Windows NT Release
+	EndGlobalSection
+	GlobalSection(ProjectDependencies) = postSolution
+	EndGlobalSection
+	GlobalSection(ProjectConfiguration) = postSolution
+		{98BA2BAC-806A-430F-9B5E-6E4DD847A512}.Windows 9x Release.ActiveCfg = Windows 9x Release|Win32
+		{98BA2BAC-806A-430F-9B5E-6E4DD847A512}.Windows 9x Release.Build.0 = Windows 9x Release|Win32
+		{98BA2BAC-806A-430F-9B5E-6E4DD847A512}.Windows NT Debug.ActiveCfg = Windows NT Debug|Win32
+		{98BA2BAC-806A-430F-9B5E-6E4DD847A512}.Windows NT Debug.Build.0 = Windows NT Debug|Win32
+		{98BA2BAC-806A-430F-9B5E-6E4DD847A512}.Windows NT Release.ActiveCfg = Windows NT Release|Win32
+		{98BA2BAC-806A-430F-9B5E-6E4DD847A512}.Windows NT Release.Build.0 = Windows NT Release|Win32
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+	EndGlobalSection
+	GlobalSection(ExtensibilityAddIns) = postSolution
+	EndGlobalSection
+EndGlobal

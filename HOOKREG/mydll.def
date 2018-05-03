@@ -1,0 +1,23 @@
+LIBRARY mydll
+
+EXPORTS
+	GetMyAPIInfo		@1
+	myRegOpenKeyA		@2
+	myRegOpenKeyW		@3
+	myRegQueryValueA		@4
+	myRegQueryValueW		@5
+	myRegQueryValueExA		@6
+	myRegQueryValueExW		@7
+	myRegDeleteKeyA		@8
+	myRegDeleteValueA	@9
+	myRegDeleteValueW	@10
+	myRegCreateKeyW		@11
+	myRegSetValueW		@12
+	myRegCreateKeyA		@13
+	myRegSetValueA		@14
+	myRegCreateKeyExA	@15
+	myRegCreateKeyExW	@16
+	myRegSetValueExA	@17
+	myRegSetValueExW	@18
+	SetServerInfo		@19
+	

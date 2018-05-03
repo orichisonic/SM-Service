@@ -1,0 +1,49 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: HookAPI - Win32 Windows NT Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\DOCUME~1\LIN_WA~1.SHA\LOCALS~1\Temp\RSP2684.tmp" with contents
+[
+/nologo /MT /W3 /GX /Zi /O2 /D "WIN32" /D "DEBUG" /D "_WINDOWS" /D "_MBCS" /D "_USRDLL" /D "HookAPI_EXPORTS" /D "WINNT" /Fp"Windows_NT_Debug/HookAPI.pch" /YX /Fo"Windows_NT_Debug/" /Fd"Windows_NT_Debug/" /FD /c 
+"D:\SM SERVICE\Hook\ApiInfo.cpp"
+"D:\SM SERVICE\Hook\HookAPI.cpp"
+"D:\SM SERVICE\Hook\injlib.cpp"
+"D:\SM SERVICE\Hook\main.cpp"
+"D:\SM SERVICE\Hook\ProcessModule.cpp"
+]
+Creating command line "cl.exe @C:\DOCUME~1\LIN_WA~1.SHA\LOCALS~1\Temp\RSP2684.tmp" 
+Creating temporary file "C:\DOCUME~1\LIN_WA~1.SHA\LOCALS~1\Temp\RSP2685.tmp" with contents
+[
+kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib wsock32.lib /nologo /dll /incremental:no /pdb:"Windows_NT_Debug/HookAPINT.pdb" /map:"Windows_NT_Debug/HookAPINT.map" /debug /machine:I386 /def:".\HookAPI.def" /out:"../OUTPUT/HookAPINT.dll" /implib:"Windows_NT_Debug/HookAPINT.lib" 
+".\Windows_NT_Debug\ApiInfo.obj"
+".\Windows_NT_Debug\HookAPI.obj"
+".\Windows_NT_Debug\injlib.obj"
+".\Windows_NT_Debug\main.obj"
+".\Windows_NT_Debug\ProcessModule.obj"
+".\Windows_NT_Debug\ProcessToHook.obj"
+".\Windows_NT_Debug\Ring0.obj"
+".\Windows_NT_Debug\util.obj"
+".\Windows_NT_Debug\Resource.res"
+]
+Creating command line "link.exe @C:\DOCUME~1\LIN_WA~1.SHA\LOCALS~1\Temp\RSP2685.tmp"
+<h3>Output Window</h3>
+Compiling...
+ApiInfo.cpp
+HookAPI.cpp
+injlib.cpp
+main.cpp
+ProcessModule.cpp
+Linking...
+   Creating library Windows_NT_Debug/HookAPINT.lib and object Windows_NT_Debug/HookAPINT.exp
+
+
+
+<h3>Results</h3>
+HookAPINT.dll - 0 error(s), 0 warning(s)
+</pre>
+</body>
+</html>

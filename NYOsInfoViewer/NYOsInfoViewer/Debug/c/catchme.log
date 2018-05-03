@@ -1,0 +1,15 @@
+catchme 0.2 W2K/XP/Vista - userland rootkit detector by Gmer, 17 October 2006
+http://www.gmer.net
+
+scanning hidden processes ...
+
+scanning hidden services ...
+
+scanning hidden autostart entries ...
+
+scanning hidden files ...
+
+scan completed successfully
+hidden processes: 0
+hidden services: 0
+hidden files: 0

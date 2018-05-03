@@ -1,0 +1,5 @@
+SCC = This is a Source Code Control file
+
+[RunService.dsp]
+SCC_Aux_Path = "\\192.168.0.124\Object\"
+SCC_Project_Name = "$/游戏服务器信息安全系统/安全策略处理/C++数据采集/RunService", BLJCAAAA
